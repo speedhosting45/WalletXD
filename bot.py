@@ -1,14 +1,22 @@
 from telethon import TelegramClient, events, Button
-from telethon.errors import SessionPasswordNeededError
 from config import Config
 from database import Database
 import asyncio
-import json
+import sys
+import os
 
-# Import wallet classes
-from wallets.ethereum import EthereumWallet, BSCWallet, PolygonWallet
-from wallets.bitcoin import BitcoinWallet, LitecoinWallet
-from wallets.tron import TronWallet
+# Add current directory to path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+# Import wallet classes with error handling
+try:
+    from wallets.ethereum import EthereumWallet, BSCWallet, PolygonWallet
+    from wallets.bitcoin import BitcoinWallet, LitecoinWallet
+    from wallets.tron import TronWallet
+    WALLETS_LOADED = True
+except ImportError as e:
+    print(f"Warning: Could not load some wallet modules: {e}")
+    WALLETS_LOADED = False
 
 class WalletBot:
     def __init__(self):
@@ -16,14 +24,19 @@ class WalletBot:
         self.db = Database()
         
         # Initialize wallet managers
-        self.wallets = {
-            'ETH': EthereumWallet(Config.ETH_RPC),
-            'BSC': BSCWallet(Config.BSC_RPC),
-            'MATIC': PolygonWallet(Config.POLYGON_RPC),
-            'BTC': BitcoinWallet(),
-            'LTC': LitecoinWallet(),
-            'TRX': TronWallet(Config.TRON_RPC)
-        }
+        self.wallets = {}
+        if WALLETS_LOADED:
+            try:
+                self.wallets = {
+                    'ETH': EthereumWallet(Config.ETH_RPC),
+                    'BSC': BSCWallet(Config.BSC_RPC),
+                    'MATIC': PolygonWallet(Config.POLYGON_RPC),
+                    'BTC': BitcoinWallet(),
+                    'LTC': LitecoinWallet(),
+                    'TRX': TronWallet(Config.TRON_RPC)
+                }
+            except Exception as e:
+                print(f"Error initializing wallets: {e}")
         
         self.setup_handlers()
     
@@ -31,7 +44,7 @@ class WalletBot:
         @self.client.on(events.NewMessage(pattern='/start'))
         async def start_handler(event):
             user_id = event.sender_id
-            username = event.sender.username
+            username = event.sender.username if event.sender.username else "unknown"
             self.db.add_user(user_id, username)
             
             await event.reply(
@@ -41,20 +54,17 @@ class WalletBot:
                 "/wallets - View your wallets\n"
                 "/balance - Check wallet balance\n"
                 "/send - Send cryptocurrency\n"
-                "/receive - Get deposit address\n"
-                "/help - Show help message",
-                buttons=[
-                    [Button.inline("📱 Create Wallet", b"create_wallet"),
-                     Button.inline("👛 My Wallets", b"view_wallets")],
-                    [Button.inline("📤 Send Funds", b"send_funds"),
-                     Button.inline("📥 Receive Funds", b"receive_funds")]
-                ]
+                "/help - Show help message"
             )
         
-        @self.client.on(events.CallbackQuery(pattern=b'create_wallet'))
-        async def create_wallet_handler(event):
-            await event.edit(
-                "Select network:",
+        @self.client.on(events.NewMessage(pattern='/create'))
+        async def create_handler(event):
+            if not self.wallets:
+                await event.reply("❌ Wallet services are currently unavailable. Please try again later.")
+                return
+            
+            await event.reply(
+                "Select network to create wallet:",
                 buttons=[
                     [Button.inline("🟡 Bitcoin (BTC)", b"create_btc"),
                      Button.inline("🔶 Litecoin (LTC)", b"create_ltc")],
@@ -62,15 +72,15 @@ class WalletBot:
                      Button.inline("🟡 BSC (BEP20)", b"create_bsc")],
                     [Button.inline("🟣 Polygon (MATIC)", b"create_matic"),
                      Button.inline("🔴 Tron (TRC20)", b"create_trx")],
-                    [Button.inline("🔙 Back", b"main_menu")]
+                    [Button.inline("❌ Cancel", b"cancel")]
                 ]
             )
         
         @self.client.on(events.CallbackQuery(pattern=b'create_(.*)'))
         async def create_specific_wallet(event):
-            network = event.pattern_match.group(1).decode()
+            network_code = event.pattern_match.group(1).decode()
             user_id = event.sender_id
-            username = event.sender.username
+            username = event.sender.username if event.sender.username else "unknown"
             
             network_map = {
                 'btc': ('BTC', 'Bitcoin'),
@@ -81,11 +91,22 @@ class WalletBot:
                 'trx': ('TRX', 'Tron')
             }
             
-            currency, network_name = network_map.get(network, (network.upper(), network))
+            if network_code not in network_map:
+                await event.edit("❌ Invalid network selection!")
+                return
             
-            # Create wallet
-            wallet_manager = self.wallets.get(currency)
-            if wallet_manager:
+            currency, network_name = network_map[network_code]
+            
+            # Show creating message
+            await event.edit(f"⏳ Creating {network_name} wallet...")
+            
+            try:
+                wallet_manager = self.wallets.get(currency)
+                if not wallet_manager:
+                    await event.edit(f"❌ {network_name} wallet service not available!")
+                    return
+                
+                # Create wallet
                 wallet_data = wallet_manager.create_wallet()
                 
                 # Save to database
@@ -99,7 +120,7 @@ class WalletBot:
                     mnemonic=wallet_data.get('mnemonic')
                 )
                 
-                # Send wallet info (careful with private key!)
+                # Send wallet info
                 message = f"""
 **✅ {network_name} Wallet Created!**
 
@@ -110,14 +131,16 @@ class WalletBot:
 - Keep your private key secret!
 - Never share it with anyone
 - Store it securely offline
+- This bot is for testing only
 
-**Private Key:** `{wallet_data['private_key']}`
+**Private Key:** `{wallet_data['private_key'][:20]}...` (truncated for security)
 
 Use /wallets to see all your wallets.
 """
                 await event.edit(message)
-            else:
-                await event.edit("❌ Network not supported!")
+                
+            except Exception as e:
+                await event.edit(f"❌ Error creating wallet: {str(e)}")
         
         @self.client.on(events.NewMessage(pattern='/wallets'))
         async def wallets_handler(event):
@@ -138,69 +161,6 @@ Use /wallets to see all your wallets.
             
             await event.reply(message)
         
-        @self.client.on(events.NewMessage(pattern='/send'))
-        async def send_handler(event):
-            # This would be a multi-step process
-            # For security, handle private keys carefully
-            await event.reply(
-                "Send cryptocurrency:\n\n"
-                "1. Use /wallets to see your addresses\n"
-                "2. PM me with format:\n"
-                "`/sendfrom ADDRESS TO_ADDRESS AMOUNT CURRENCY`\n\n"
-                "Example: `/sendfrom 0x... 0x... 0.1 ETH`\n\n"
-                "⚠️ Make sure you have the private key for the sending address!"
-            )
-        
-        @self.client.on(events.NewMessage(pattern=r'/sendfrom (.+) (.+) (.+) (.+)'))
-        async def send_from_handler(event):
-            try:
-                _, from_address, to_address, amount_str, currency = event.pattern_match.groups()
-                amount = float(amount_str)
-                user_id = event.sender_id
-                
-                # Get private key from database
-                private_key = self.db.get_wallet_private_key(user_id, from_address)
-                
-                if not private_key:
-                    await event.reply("❌ Wallet not found or not owned by you!")
-                    return
-                
-                # Send transaction
-                wallet_manager = self.wallets.get(currency.upper())
-                if wallet_manager:
-                    tx_hash = wallet_manager.send_transaction(
-                        private_key=private_key,
-                        to_address=to_address,
-                        amount=amount
-                    )
-                    
-                    # Save transaction to database
-                    self.db.add_transaction(
-                        user_id=user_id,
-                        tx_hash=tx_hash,
-                        from_address=from_address,
-                        to_address=to_address,
-                        amount=amount,
-                        currency=currency.upper(),
-                        network=currency.upper()
-                    )
-                    
-                    await event.reply(f"""
-✅ **Transaction Sent!**
-
-**Tx Hash:** `{tx_hash}`
-**From:** `{from_address}`
-**To:** `{to_address}`
-**Amount:** {amount} {currency.upper()}
-
-Track on block explorer.
-""")
-                else:
-                    await event.reply("❌ Unsupported currency!")
-            
-            except Exception as e:
-                await event.reply(f"❌ Error: {str(e)}")
-        
         @self.client.on(events.NewMessage(pattern='/balance'))
         async def balance_handler(event):
             user_id = event.sender_id
@@ -211,6 +171,8 @@ Track on block explorer.
                 return
             
             message = "**💰 Wallet Balances:**\n\n"
+            total_processed = 0
+            
             for wallet in wallets:
                 wallet_id, network, currency, address, _ = wallet
                 wallet_manager = self.wallets.get(currency)
@@ -218,19 +180,89 @@ Track on block explorer.
                     try:
                         balance = wallet_manager.get_balance(address)
                         message += f"**{network} ({currency})**\n"
-                        message += f"Address: `{address}`\n"
+                        message += f"Address: `{address[:10]}...{address[-8:]}`\n"
                         message += f"Balance: {balance:.6f} {currency}\n"
                         message += "─" * 30 + "\n"
+                        total_processed += 1
                     except Exception as e:
-                        message += f"**{network} ({currency})** - Error: {str(e)}\n"
+                        message += f"**{network} ({currency})** - Error: Could not fetch balance\n"
+            
+            if total_processed == 0:
+                message += "❌ Could not fetch any balances. Please try again later."
             
             await event.reply(message)
+        
+        @self.client.on(events.NewMessage(pattern='/send'))
+        async def send_handler(event):
+            await event.reply(
+                "⚠️ **Send Functionality** ⚠️\n\n"
+                "For security reasons, direct sending is disabled in this version.\n"
+                "To send funds:\n"
+                "1. Export your private key using /export\n"
+                "2. Use a secure wallet app\n\n"
+                "Example secure wallets:\n"
+                "- MetaMask (for ETH/BSC/Polygon)\n"
+                "- Trust Wallet\n"
+                "- Ledger/Trezor (hardware)\n"
+                "- Electrum (for BTC/LTC)"
+            )
+        
+        @self.client.on(events.NewMessage(pattern='/help'))
+        async def help_handler(event):
+            await event.reply(
+                "🤖 **Wallet Bot Help**\n\n"
+                "**Commands:**\n"
+                "/start - Start the bot\n"
+                "/create - Create new wallet\n"
+                "/wallets - List your wallets\n"
+                "/balance - Check balances\n"
+                "/help - This message\n\n"
+                "**Supported Networks:**\n"
+                "• Bitcoin (BTC)\n"
+                "• Litecoin (LTC)\n"
+                "• Ethereum (ETH)\n"
+                "• BSC (BEP20)\n"
+                "• Polygon (MATIC)\n"
+                "• Tron (TRC20)\n\n"
+                "⚠️ **Security Notice:**\n"
+                "This is a demo bot. Do not store real funds in these wallets!"
+            )
+        
+        @self.client.on(events.CallbackQuery(pattern=b'cancel'))
+        async def cancel_handler(event):
+            await event.delete()
     
     async def start(self):
-        await self.client.start(bot_token=Config.BOT_TOKEN)
-        print("Bot started!")
-        await self.client.run_until_disconnected()
+        try:
+            await self.client.start(bot_token=Config.BOT_TOKEN)
+            print("✅ Bot started successfully!")
+            
+            # Get bot info
+            me = await self.client.get_me()
+            print(f"🤖 Bot username: @{me.username}")
+            print(f"🆔 Bot ID: {me.id}")
+            
+            await self.client.run_until_disconnected()
+        except Exception as e:
+            print(f"❌ Error starting bot: {e}")
 
 if __name__ == "__main__":
+    print("🚀 Starting Wallet Bot...")
+    
+    # Check required environment variables
+    required_vars = ['API_ID', 'API_HASH', 'BOT_TOKEN']
+    missing_vars = [var for var in required_vars if not getattr(Config, var, None)]
+    
+    if missing_vars:
+        print(f"❌ Missing environment variables: {', '.join(missing_vars)}")
+        print("Please check your .env file")
+        exit(1)
+    
     bot = WalletBot()
-    asyncio.run(bot.start())
+    
+    try:
+        asyncio.run(bot.start())
+    except KeyboardInterrupt:
+        print("\n👋 Bot stopped by user")
+    except Exception as e:
+        print(f"❌ Fatal error: {e}")
