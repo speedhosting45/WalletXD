@@ -3,7 +3,7 @@ from typing import Dict, Any, Optional
 
 class BaseWallet(ABC):
     @abstractmethod
-    def create_wallet(self) -> Dict[str, Any]:
+    def create_wallet(self, mnemonic: Optional[str] = None) -> Dict[str, Any]:
         pass
     
     @abstractmethod
@@ -11,7 +11,7 @@ class BaseWallet(ABC):
         pass
     
     @abstractmethod
-    def send_transaction(self, private_key: str, to_address: str, amount: float) -> str:
+    def send_transaction(self, private_key: str, to_address: str, amount: float, **kwargs) -> str:
         pass
     
     @abstractmethod
