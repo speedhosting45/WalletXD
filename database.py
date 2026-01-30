@@ -1,10 +1,13 @@
 import sqlite3
 import json
 from datetime import datetime
+from typing import List, Tuple, Optional
 
 class Database:
-    def __init__(self, db_path="wallets.db"):
+    def __init__(self, db_path: str = "wallets.db"):
+        self.db_path = db_path
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
         self.create_tables()
     
     def create_tables(self):
@@ -35,7 +38,7 @@ class Database:
             )
         """)
         
-        # Transactions table
+        # Transactions table (optional for now)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS transactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,15 +57,17 @@ class Database:
         
         self.conn.commit()
     
-    def add_user(self, user_id, username):
+    def add_user(self, user_id: int, username: Optional[str] = None):
         cursor = self.conn.cursor()
         cursor.execute(
             "INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)",
             (user_id, username)
         )
         self.conn.commit()
+        return cursor.lastrowid
     
-    def add_wallet(self, user_id, network, currency, address, private_key, public_key, mnemonic=None):
+    def add_wallet(self, user_id: int, network: str, currency: str, address: str, 
+                  private_key: str, public_key: str, mnemonic: Optional[str] = None):
         cursor = self.conn.cursor()
         cursor.execute("""
             INSERT INTO wallets (user_id, network, currency, address, private_key, public_key, mnemonic)
@@ -71,7 +76,7 @@ class Database:
         self.conn.commit()
         return cursor.lastrowid
     
-    def get_user_wallets(self, user_id):
+    def get_user_wallets(self, user_id: int) -> List[Tuple]:
         cursor = self.conn.cursor()
         cursor.execute("""
             SELECT id, network, currency, address, created_at 
@@ -81,7 +86,7 @@ class Database:
         """, (user_id,))
         return cursor.fetchall()
     
-    def get_wallet_private_key(self, user_id, address):
+    def get_wallet_private_key(self, user_id: int, address: str) -> Optional[str]:
         cursor = self.conn.cursor()
         cursor.execute("""
             SELECT private_key FROM wallets 
@@ -90,17 +95,5 @@ class Database:
         result = cursor.fetchone()
         return result[0] if result else None
     
-    def add_transaction(self, user_id, tx_hash, from_address, to_address, amount, currency, network, status="pending"):
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT INTO transactions (user_id, tx_hash, from_address, to_address, amount, currency, network, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (user_id, tx_hash, from_address, to_address, amount, currency, network, status))
-        self.conn.commit()
-    
-    def update_transaction_status(self, tx_hash, status):
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            UPDATE transactions SET status = ? WHERE tx_hash = ?
-        """, (status, tx_hash))
-        self.conn.commit()
+    def close(self):
+        self.conn.close()
