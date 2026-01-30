@@ -1,7 +1,7 @@
 telethon==1.34.0
-web3==6.15.1
-tronpy==0.6.2
+web3==6.15.1  # Downgraded for compatibility
+tronpy==1.6.2
 bitcoinlib==0.6.15
 python-dotenv==1.0.0
-sqlite3
 aiohttp==3.9.1
+eth-account==0.10.0
